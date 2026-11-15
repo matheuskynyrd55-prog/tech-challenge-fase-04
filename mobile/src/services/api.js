@@ -1,273 +1,259 @@
-import authModule from './auth.js';
+const API_PORT = 3000;
+const REQUEST_TIMEOUT_MS = 10000;
+const STORAGE_KEY_SESSION = 'tc_session_v2';
 
-const fallbackStorage = {
-  getItem: async () => null,
-  setItem: async () => true,
-  removeItem: async () => true,
-};
-
-let resolvedStorage = null;
-
-const getStorageClient = async () => {
-  if (resolvedStorage) return resolvedStorage;
-
-  try {
-    const storageModule = await import('@react-native-async-storage/async-storage');
-    resolvedStorage = storageModule.default || storageModule;
-    return resolvedStorage;
-  } catch (error) {
-    resolvedStorage = fallbackStorage;
-    return resolvedStorage;
+export class ApiError extends Error {
+  constructor(message, status = 0) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
   }
-};
-
-const { createUserAccount, loginLocalUser, ensureDefaultTeacher, updateUserAccount, deleteUserAccount } = authModule;
-
-const STORAGE_KEYS = {
-  users: 'tc_users_v1',
-  posts: 'tc_posts_v1',
-  session: 'tc_session_v1',
-};
-
-const memoryStore = globalThis.__tc_storage_store || {};
-if (!globalThis.__tc_storage_store) {
-  globalThis.__tc_storage_store = memoryStore;
 }
 
-const readStorage = async (key, fallback = []) => {
-  const storageClient = await getStorageClient();
+const memoryStore = {};
+let storagePromise = null;
+let cachedSession;
+let unauthorizedHandler = null;
 
+const getStorage = () => {
+  if (!storagePromise) {
+    storagePromise = import('@react-native-async-storage/async-storage')
+      .then((module) => module.default || module)
+      .catch(() => null);
+  }
+  return storagePromise;
+};
+
+const readItem = async (key) => {
   try {
-    const raw = await storageClient.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return parsed ?? fallback;
-  } catch (error) {
-    const value = memoryStore[key];
-    if (value === undefined) return fallback;
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
+    const storage = await getStorage();
+    if (storage) {
+      const value = await storage.getItem(key);
+      if (value !== null && value !== undefined) return value;
     }
-  }
-};
-
-const writeStorage = async (key, value) => {
-  const storageClient = await getStorageClient();
-
-  try {
-    await storageClient.setItem(key, JSON.stringify(value));
   } catch (error) {
-    memoryStore[key] = JSON.stringify(value);
+    // Storage nativo indisponível: usa o valor em memória.
+  }
+  return memoryStore[key] ?? null;
+};
+
+const writeItem = async (key, value) => {
+  memoryStore[key] = value;
+  try {
+    const storage = await getStorage();
+    if (storage) await storage.setItem(key, value);
+  } catch (error) {
+    // Mantém apenas em memória.
+  }
+};
+
+const removeItem = async (key) => {
+  delete memoryStore[key];
+  try {
+    const storage = await getStorage();
+    if (storage) await storage.removeItem(key);
+  } catch (error) {
+    // Nada a limpar além da memória.
+  }
+};
+
+let baseUrlPromise = null;
+
+const resolveBaseUrl = async () => {
+  const fromEnv = process.env.EXPO_PUBLIC_API_URL;
+  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+
+  let host = 'localhost';
+  try {
+    const module = await import('expo-constants');
+    const Constants = module.default || module;
+    const hostUri = Constants?.expoConfig?.hostUri || Constants?.manifest2?.extra?.expoGo?.debuggerHost;
+    if (hostUri) host = String(hostUri).split(':')[0];
+  } catch (error) {
+    // Sem Expo Constants: usa localhost.
   }
 
-  memoryStore[key] = JSON.stringify(value);
-  return true;
+  return `http://${host}:${API_PORT}/api/v1`;
 };
 
-const normalizePost = (post = {}) => ({
-  ...post,
-  id: String(post.id ?? `${Date.now()}`),
-  title: String(post.title ?? '').trim(),
-  content: String(post.content ?? '').trim(),
-  author: String(post.author ?? 'usuario'),
-  likes: Number(post.likes || 0),
-  likedBy: Array.isArray(post.likedBy) ? post.likedBy : [],
-  comments: Array.isArray(post.comments)
-    ? post.comments.map((comment) => ({
-        ...comment,
-        id: String(comment.id ?? `${Date.now()}-${Math.random()}`),
-        author: String(comment.author || 'usuario'),
-        content: String(comment.content || '').trim(),
-        createdAt: comment.createdAt || new Date().toISOString(),
-      }))
-    : [],
-  createdAt: post.createdAt || new Date().toISOString(),
-});
-
-const readPosts = async () => {
-  const posts = await readStorage(STORAGE_KEYS.posts, []);
-  return Array.isArray(posts) ? posts.map(normalizePost) : [];
+export const getBaseUrl = () => {
+  if (!baseUrlPromise) baseUrlPromise = resolveBaseUrl();
+  return baseUrlPromise;
 };
 
-const writePosts = async (posts) => writeStorage(STORAGE_KEYS.posts, posts.map(normalizePost));
-
-const getStoredUsers = async () => {
-  const users = await readStorage(STORAGE_KEYS.users, []);
-  const normalizedUsers = Array.isArray(users) ? users : [];
-  const ensuredUsers = ensureDefaultTeacher({ users: normalizedUsers });
-
-  if (JSON.stringify(ensuredUsers) !== JSON.stringify(normalizedUsers)) {
-    await writeStorage(STORAGE_KEYS.users, ensuredUsers);
-  }
-
-  return ensuredUsers;
-};
-
-export const getUsers = async () => {
-  const users = await getStoredUsers();
-  return users.map((user) => ({
-    username: String(user.username || '').trim(),
-    name: String(user.name || user.username || '').trim(),
-    role: user.role === 'docente' ? 'docente' : 'aluno',
-  }));
-};
-
-export const fetchPosts = async () => {
-  const posts = await readPosts();
-  return posts;
-};
-
-export const loginUser = async (username, password) => {
-  const store = { users: await getStoredUsers() };
-  const session = loginLocalUser({ username, password, store });
-  await writeStorage(STORAGE_KEYS.users, store.users);
-  await writeStorage(STORAGE_KEYS.session, session);
-  return session;
-};
-
-export const registerUser = async ({ username, password, role, name, actorRole }) => {
-  const store = { users: await getStoredUsers() };
-  const user = createUserAccount({ username, password, role, name, actorRole, store });
-  await writeStorage(STORAGE_KEYS.users, store.users);
-  return {
-    ok: true,
-    user: {
-      username: user.username,
-      role: user.role,
-      name: user.name,
-    },
-  };
-};
-
-export const editUser = async ({ username, name, password, role, actorRole }) => {
-  const store = { users: await getStoredUsers() };
-  const user = updateUserAccount({ username, name, password, role, actorRole, store });
-  await writeStorage(STORAGE_KEYS.users, store.users);
-  return { ok: true, user: { username: user.username, role: user.role, name: user.name } };
-};
-
-export const removeUser = async ({ username, actorRole, actorUsername }) => {
-  const store = { users: await getStoredUsers() };
-  deleteUserAccount({ username, actorRole, actorUsername, store });
-  await writeStorage(STORAGE_KEYS.users, store.users);
-  return { ok: true };
+export const setUnauthorizedHandler = (handler) => {
+  unauthorizedHandler = handler;
 };
 
 export const loadSession = async () => {
-  const storageClient = await getStorageClient();
+  if (cachedSession !== undefined) return cachedSession;
 
+  const raw = await readItem(STORAGE_KEY_SESSION);
   try {
-    const raw = await storageClient.getItem(STORAGE_KEYS.session);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && parsed.user ? parsed : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    cachedSession = parsed && parsed.token && parsed.user ? parsed : null;
   } catch (error) {
-    const value = memoryStore[STORAGE_KEYS.session];
-    if (!value) return null;
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && parsed.user ? parsed : null;
-    } catch {
-      return null;
-    }
+    cachedSession = null;
   }
+  return cachedSession;
+};
+
+const saveSession = async (session) => {
+  cachedSession = session;
+  await writeItem(STORAGE_KEY_SESSION, JSON.stringify(session));
 };
 
 export const clearSession = async () => {
-  const storageClient = await getStorageClient();
+  cachedSession = null;
+  await removeItem(STORAGE_KEY_SESSION);
+};
 
+const NETWORK_ERROR_MESSAGE =
+  'Não foi possível conectar ao servidor. Verifique se a API está em execução e se o celular está na mesma rede.';
+
+const extractMessage = (data, fallback) => {
+  if (data && Array.isArray(data.details) && data.details.length > 0) {
+    return data.details.map((item) => item.message).join(' ');
+  }
+  return (data && data.message) || fallback;
+};
+
+const request = async (path, { method = 'GET', body, skipAuthHandling = false } = {}) => {
+  const baseUrl = await getBaseUrl();
+  const session = await loadSession();
+
+  const headers = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (session?.token) headers.Authorization = `Bearer ${session.token}`;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
+
+  let response;
   try {
-    await storageClient.removeItem(STORAGE_KEYS.session);
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller ? controller.signal : undefined,
+    });
   } catch (error) {
-    memoryStore[STORAGE_KEYS.session] = null;
+    throw new ApiError(NETWORK_ERROR_MESSAGE, 0);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  if (response.status === 204) return null;
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (error) {
+    data = null;
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 && !skipAuthHandling) {
+      await clearSession();
+      if (unauthorizedHandler) unauthorizedHandler();
+      throw new ApiError('Sessão expirada. Faça login novamente.', 401);
+    }
+    throw new ApiError(extractMessage(data, `Erro ${response.status} ao acessar o servidor.`), response.status);
+  }
+
+  return data;
+};
+
+const mapComment = (comment = {}) => ({
+  id: String(comment.id),
+  author: comment.author,
+  content: comment.content,
+  createdAt: comment.createdAt,
+});
+
+const mapPost = (post = {}) => {
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const comments = Array.isArray(post.comments) ? post.comments.map(mapComment) : [];
+
+  return {
+    id: String(post.id),
+    title: post.title,
+    content: post.content,
+    author: post.author,
+    createdAt: post.createdAt,
+    likedBy: likes.map((like) => like.author),
+    likes: Number(post.likesCount ?? likes.length),
+    comments,
+    commentsCount: Number(post._count?.comments ?? comments.length),
+  };
+};
+
+const mapUser = (user = {}) => ({
+  id: user.id,
+  username: user.username,
+  name: user.name || user.username,
+  role: user.role === 'docente' ? 'docente' : 'aluno',
+});
+
+export const loginUser = async (username, password) => {
+  try {
+    const data = await request('/auth/login', {
+      method: 'POST',
+      body: { username, password },
+      skipAuthHandling: true,
+    });
+    const session = { token: data.token, user: mapUser(data.user) };
+    await saveSession(session);
+    return session;
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 400)) {
+      throw new ApiError('Credenciais inválidas.', 401);
+    }
+    throw error;
   }
 };
 
-export const searchPosts = async (term = '') => {
-  const posts = await readPosts();
-  const query = String(term || '').trim().toLowerCase();
-  if (!query) return posts;
-  return posts.filter((post) =>
-    [post.title, post.author, post.content].some((field) =>
-      String(field).toLowerCase().includes(query),
-    ),
-  );
+export const fetchPosts = async () => {
+  const data = await request('/posts');
+  return (Array.isArray(data) ? data : []).map(mapPost);
 };
 
-export const createPost = async (payload) => {
-  const posts = await readPosts();
-  const next = [
-    normalizePost({
-      ...payload,
-      id: payload.id || `post-${Date.now()}`,
-      createdAt: payload.createdAt || new Date().toISOString(),
-      likes: Number(payload.likes || 0),
-      likedBy: Array.isArray(payload.likedBy) ? payload.likedBy : [],
-      comments: Array.isArray(payload.comments) ? payload.comments : [],
-    }),
-    ...posts,
-  ];
-  await writePosts(next);
-  return next[0];
-};
+export const fetchPost = async (id) => mapPost(await request(`/posts/${id}`));
 
-export const updatePost = async (id, payload) => {
-  const posts = await readPosts();
-  const updated = posts.map((post) => {
-    if (String(post.id) !== String(id)) return post;
-    return normalizePost({ ...post, ...payload, id });
-  });
-  await writePosts(updated);
-  return updated.find((post) => String(post.id) === String(id)) || normalizePost(payload);
-};
+export const createPost = async ({ title, content }) =>
+  mapPost(await request('/posts', { method: 'POST', body: { title, content } }));
+
+export const updatePost = async (id, { title, content }) =>
+  mapPost(await request(`/posts/${id}`, { method: 'PUT', body: { title, content } }));
 
 export const deletePost = async (id) => {
-  const posts = await readPosts();
-  const remaining = posts.filter((post) => String(post.id) !== String(id));
-  await writePosts(remaining);
+  await request(`/posts/${id}`, { method: 'DELETE' });
   return { ok: true, id };
 };
 
-export const toggleLike = async (postId, userName) => {
-  const posts = await readPosts();
-  const nextPosts = posts.map((post) => {
-    if (String(post.id) !== String(postId)) return post;
-    const likedBy = Array.isArray(post.likedBy) ? post.likedBy : [];
-    const alreadyLiked = !!userName && likedBy.includes(userName);
-    const nextLikedBy = alreadyLiked
-      ? likedBy.filter((member) => member !== userName)
-      : [...likedBy, userName].filter(Boolean);
+export const toggleLike = async (postId) => request(`/posts/${postId}/likes`, { method: 'POST' });
 
-    return normalizePost({
-      ...post,
-      likedBy: nextLikedBy,
-      likes: Math.max(0, Number(post.likes || 0) + (alreadyLiked ? -1 : 1)),
-    });
-  });
+export const addComment = async (postId, content) =>
+  mapComment(await request(`/posts/${postId}/comments`, { method: 'POST', body: { content } }));
 
-  await writePosts(nextPosts);
-  return nextPosts.find((post) => String(post.id) === String(postId)) || null;
+export const getUsers = async () => {
+  const data = await request('/users');
+  return (Array.isArray(data) ? data : []).map(mapUser);
 };
 
-export const addComment = async (postId, content, author) => {
-  const posts = await readPosts();
-  const nextPosts = posts.map((post) => {
-    if (String(post.id) !== String(postId)) return post;
-    const comment = {
-      id: `comment-${Date.now()}`,
-      author: author || 'usuario',
-      content: String(content || '').trim(),
-      createdAt: new Date().toISOString(),
-    };
-    return normalizePost({
-      ...post,
-      comments: [...(post.comments || []), comment],
-    });
-  });
+export const registerUser = async ({ name, username, password, role }) => {
+  const data = await request('/users', { method: 'POST', body: { name, username, password, role } });
+  return { ok: true, user: mapUser(data) };
+};
 
-  await writePosts(nextPosts);
-  const saved = nextPosts.find((post) => String(post.id) === String(postId));
-  return saved?.comments?.slice(-1)[0] || null;
+export const editUser = async ({ id, name, password, role }) => {
+  const body = { name, role };
+  if (password) body.password = password;
+  const data = await request(`/users/${id}`, { method: 'PUT', body });
+  return { ok: true, user: mapUser(data) };
+};
+
+export const removeUser = async (id) => {
+  await request(`/users/${id}`, { method: 'DELETE' });
+  return { ok: true };
 };

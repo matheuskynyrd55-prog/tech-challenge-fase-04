@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   BackHandler,
   FlatList,
   KeyboardAvoidingView,
@@ -20,11 +21,14 @@ import {
   createPost,
   deletePost,
   editUser,
+  fetchPost,
   fetchPosts,
+  getUsers,
   loadSession,
   loginUser,
   registerUser,
   removeUser,
+  setUnauthorizedHandler,
   toggleLike,
   updatePost,
 } from './src/services/api';
@@ -48,6 +52,7 @@ const normalizePosts = (list = []) =>
     id: String(post.id ?? `${Date.now()}-${Math.random()}`),
     likes: Number(post.likes || 0),
     likedBy: Array.isArray(post.likedBy) ? post.likedBy : [],
+    commentsCount: Number(post.commentsCount ?? (Array.isArray(post.comments) ? post.comments.length : 0)),
     comments: Array.isArray(post.comments)
       ? post.comments.map((comment) => ({
           ...comment,
@@ -58,11 +63,11 @@ const normalizePosts = (list = []) =>
     createdAt: post.createdAt || new Date().toISOString(),
   }));
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, notice }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(notice || '');
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) {
@@ -286,7 +291,7 @@ function UserManagerScreen({ users, onOpenForm, onEditUser, onDeleteUser, onBack
                   <Pressable onPress={() => onEditUser(item)} style={styles.secondaryButtonSmall}>
                     <Text style={styles.secondaryButtonText}>Editar</Text>
                   </Pressable>
-                  <Pressable onPress={() => handleDelete(item.username)} style={styles.deleteButton}>
+                  <Pressable onPress={() => handleDelete(item.id)} style={styles.deleteButton}>
                     <Text style={styles.deleteButtonText}>Excluir</Text>
                   </Pressable>
                 </View>
@@ -318,6 +323,8 @@ function HomeScreen({
   onOpenLogin,
   onSearch,
   searchTerm,
+  loadError,
+  onRetry,
 }) {
   const isDocente = user?.role === 'docente';
 
@@ -379,6 +386,15 @@ function HomeScreen({
           </View>
         )}
 
+        {!!loadError && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>{loadError}</Text>
+            <Pressable onPress={onRetry} style={styles.retryButton}>
+              <Text style={styles.logoutButtonText}>Tentar novamente</Text>
+            </Pressable>
+          </View>
+        )}
+
         <View style={styles.summaryRow}>
           <Text style={styles.summaryText}>{posts.length} posts</Text>
           <Text style={styles.summaryText}>{user ? (isDocente ? 'Docente' : 'Aluno') : 'Visitante'}</Text>
@@ -415,7 +431,7 @@ function HomeScreen({
                 <Text style={styles.postContent} numberOfLines={3}>{item.content}</Text>
 
                 <View style={styles.metaRow}>
-                  <Text style={styles.metaText}>{(item.comments || []).length} comentários</Text>
+                  <Text style={styles.metaText}>{item.commentsCount ?? (item.comments || []).length} comentários</Text>
                   <Text style={styles.metaText}>{formatDate(item.createdAt)}</Text>
                 </View>
               </Pressable>
@@ -642,6 +658,8 @@ export default function App() {
   const [selectedUserRole, setSelectedUserRole] = useState('docente');
   const [allUsers, setAllUsers] = useState([]);
   const [editingUser, setEditingUser] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [loginNotice, setLoginNotice] = useState('');
 
   const visiblePosts = useMemo(() => {
     if (!searchTerm.trim()) return posts;
@@ -655,9 +673,14 @@ export default function App() {
 
   const selectedPost = posts.find((post) => String(post.id) === String(selectedPostId)) || null;
 
+  const showError = (error, fallback = 'Não foi possível concluir a ação.') => {
+    if (error?.status === 401) return;
+    Alert.alert('Atenção', error?.message || fallback);
+  };
+
   const refreshUsers = async () => {
     try {
-      const data = await (await import('./src/services/api')).getUsers();
+      const data = await getUsers();
       setAllUsers(Array.isArray(data) ? data : []);
     } catch (error) {
       setAllUsers([]);
@@ -665,8 +688,24 @@ export default function App() {
   };
 
   const ensureUserListLoaded = async () => {
-    await refreshUsers();
+    if (user?.role === 'docente') {
+      await refreshUsers();
+    } else {
+      setAllUsers([]);
+    }
   };
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setUser(null);
+      setToken(null);
+      setSelectedPostId(null);
+      setLoginNotice('Sessão expirada. Faça login novamente.');
+      setScreen('login');
+    });
+
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -679,7 +718,6 @@ export default function App() {
         setToken(null);
       }
       setIsRestoringSession(false);
-      await refreshUsers();
     };
 
     restoreSession();
@@ -688,15 +726,12 @@ export default function App() {
   useEffect(() => {
     if (user) {
       setScreen('home');
-      setUserMenuOpen(false);
-      loadPosts();
-      ensureUserListLoaded();
     } else {
       setSelectedPostId(null);
-      setUserMenuOpen(false);
-      loadPosts();
-      ensureUserListLoaded();
     }
+    setUserMenuOpen(false);
+    loadPosts();
+    ensureUserListLoaded();
   }, [user]);
 
   useEffect(() => {
@@ -735,14 +770,32 @@ export default function App() {
 
   const loadPosts = async () => {
     setLoadingPosts(true);
-    const data = await fetchPosts();
-    setPosts(normalizePosts(data || []));
-    setLoadingPosts(false);
+    try {
+      const data = await fetchPosts();
+      setPosts(normalizePosts(data || []));
+      setLoadError('');
+    } catch (error) {
+      setLoadError(error?.message || 'Não foi possível carregar os posts.');
+    } finally {
+      setLoadingPosts(false);
+    }
+  };
+
+  const loadPostDetail = async (postId) => {
+    try {
+      const detail = await fetchPost(postId);
+      setPosts((current) =>
+        normalizePosts(current.map((post) => (String(post.id) === String(postId) ? { ...post, ...detail } : post))),
+      );
+    } catch (error) {
+      showError(error, 'Não foi possível carregar a postagem.');
+    }
   };
 
   const handleLogin = async (username, password) => {
     try {
       const response = await loginUser(username, password);
+      setLoginNotice('');
       setUser(response.user);
       setToken(response.token);
       setScreen('home');
@@ -769,97 +822,91 @@ export default function App() {
   const handleLike = async (postId) => {
     if (!user) return;
 
-    const currentPost = posts.find((post) => String(post.id) === String(postId));
-    const username = user?.username;
-    const likedBy = Array.isArray(currentPost?.likedBy) ? currentPost.likedBy : [];
-    const alreadyLiked = Boolean(username && likedBy.includes(username));
+    try {
+      const result = await toggleLike(postId);
+      const username = user.username;
 
-    const nextLikedBy = alreadyLiked
-      ? likedBy.filter((member) => member !== username)
-      : [...likedBy, username].filter(Boolean);
-
-    const nextLikes = Math.max(0, Number(currentPost?.likes || 0) + (alreadyLiked ? -1 : 1));
-
-    setPosts((current) =>
-      current.map((post) => {
-        if (String(post.id) !== String(postId)) return post;
-        return {
-          ...post,
-          likes: nextLikes,
-          likedBy: nextLikedBy,
-        };
-      }),
-    );
-
-    await toggleLike(postId, username);
+      setPosts((current) =>
+        current.map((post) => {
+          if (String(post.id) !== String(postId)) return post;
+          const others = (post.likedBy || []).filter((member) => member !== username);
+          return {
+            ...post,
+            likes: Number(result.likesCount || 0),
+            likedBy: result.liked ? [...others, username] : others,
+          };
+        }),
+      );
+    } catch (error) {
+      showError(error, 'Não foi possível curtir a postagem.');
+    }
   };
 
   const handleAddComment = async (postId, commentText) => {
     if (!user || !commentText.trim()) return;
 
-    const response = await addComment(postId, commentText.trim(), user?.name || user?.username || 'Você');
-    const comment = response || {
-      id: `${Date.now()}`,
-      author: user?.name || user?.username || 'Você',
-      content: commentText.trim(),
-      createdAt: new Date().toISOString(),
-    };
+    try {
+      const comment = await addComment(postId, commentText.trim());
 
-    setPosts((current) =>
-      current.map((post) => {
-        if (String(post.id) !== String(postId)) return post;
-        return {
-          ...post,
-          comments: [...(post.comments || []), comment],
-        };
-      }),
-    );
+      setPosts((current) =>
+        current.map((post) => {
+          if (String(post.id) !== String(postId)) return post;
+          return {
+            ...post,
+            comments: [...(post.comments || []), comment],
+            commentsCount: Number(post.commentsCount || 0) + 1,
+          };
+        }),
+      );
+    } catch (error) {
+      showError(error, 'Não foi possível enviar o comentário.');
+    }
   };
 
   const handleCreate = async (payload) => {
     if (!user || user.role !== 'docente') return;
 
-    const payloadToSave = {
-      ...payload,
-      id: `post-${Date.now()}`,
-      author: user?.username || payload.author || 'usuario',
-      likes: 0,
-      likedBy: [],
-      comments: [],
-      createdAt: new Date().toISOString(),
-    };
-
-    const created = await createPost(payloadToSave);
-    setPosts((current) => [normalizePosts([created || payloadToSave])[0], ...current]);
-    setScreen(editorReturn);
-    setEditorValues(defaultForm);
+    try {
+      const created = await createPost({ title: payload.title, content: payload.content });
+      setPosts((current) => [normalizePosts([created])[0], ...current]);
+      setScreen(editorReturn);
+      setEditorValues(defaultForm);
+    } catch (error) {
+      showError(error, 'Não foi possível publicar a postagem.');
+    }
   };
 
   const handleUpdate = async (payload) => {
     if (!user || user.role !== 'docente') return;
 
-    const source = posts.find((item) => String(item.id) === String(selectedPostId));
-    const updated = await updatePost(selectedPostId, {
-      ...source,
-      ...payload,
-      author: user?.username || source?.author || 'usuario',
-    });
-    setPosts((current) =>
-      current.map((post) =>
-        String(post.id) === String(selectedPostId) ? { ...post, ...updated } : post,
-      ),
-    );
-    setScreen(editorReturn);
-    setEditorValues(defaultForm);
-    setSelectedPostId(null);
+    try {
+      const updated = await updatePost(selectedPostId, { title: payload.title, content: payload.content });
+      setPosts((current) =>
+        current.map((post) =>
+          String(post.id) === String(selectedPostId)
+            ? { ...post, title: updated.title, content: updated.content }
+            : post,
+        ),
+      );
+      setScreen(editorReturn);
+      setEditorValues(defaultForm);
+      setSelectedPostId(null);
+    } catch (error) {
+      showError(error, 'Não foi possível salvar a postagem.');
+    }
   };
 
   const handleDelete = async (postId) => {
     if (!user || user.role !== 'docente') return;
-    await deletePost(postId);
-    setPosts((current) => current.filter((post) => String(post.id) !== String(postId)));
-    if (String(selectedPostId) === String(postId)) {
-      setSelectedPostId(null);
+
+    try {
+      await deletePost(postId);
+      setPosts((current) => current.filter((post) => String(post.id) !== String(postId)));
+      if (String(selectedPostId) === String(postId)) {
+        setSelectedPostId(null);
+      }
+    } catch (error) {
+      showError(error, 'Não foi possível excluir a postagem.');
     }
   };
 
@@ -869,49 +916,23 @@ export default function App() {
     }
 
     try {
-      const response = await registerUser({ username, password, role, name, actorRole: user.role });
-      const createdUser = response?.user || { username, name, role };
-
-      setAllUsers((current) => {
-        const safeCurrent = Array.isArray(current) ? current : [];
-        const alreadyPresent = safeCurrent.some(
-          (entry) => String(entry.username || '').toLowerCase() === String(createdUser.username || '').toLowerCase(),
-        );
-
-        if (alreadyPresent) {
-          return safeCurrent.map((entry) =>
-            String(entry.username || '').toLowerCase() === String(createdUser.username || '').toLowerCase()
-              ? { ...entry, ...createdUser, role: createdUser.role || entry.role }
-              : entry,
-          );
-        }
-
-        return [
-          ...safeCurrent,
-          {
-            username: createdUser.username,
-            name: createdUser.name || createdUser.username,
-            role: createdUser.role || role,
-          },
-        ];
-      });
-
+      const response = await registerUser({ username, password, role, name });
       await refreshUsers();
       setUserMenuOpen(false);
       setScreen('user-manager');
-      return { ok: true, user: createdUser };
+      return { ok: true, user: response.user };
     } catch (error) {
       return { error: error.message || 'Não foi possível criar o usuário.' };
     }
   };
 
-  const handleUpdateUser = async ({ username, password, role, name }) => {
+  const handleUpdateUser = async ({ password, role, name }) => {
     if (!user || user.role !== 'docente') {
       return { error: 'Apenas professores logados podem editar usuários.' };
     }
 
     try {
-      const response = await editUser({ username, password, role, name, actorRole: user.role });
+      const response = await editUser({ id: editingUser.id, password, role, name });
       await refreshUsers();
 
       if (String(response.user.username).toLowerCase() === String(user.username).toLowerCase()) {
@@ -928,9 +949,9 @@ export default function App() {
     }
   };
 
-  const handleDeleteUser = async (username) => {
+  const handleDeleteUser = async (id) => {
     try {
-      await removeUser({ username, actorRole: user?.role, actorUsername: user?.username });
+      await removeUser(id);
       await refreshUsers();
       return { ok: true };
     } catch (error) {
@@ -948,7 +969,7 @@ export default function App() {
   }
 
   if (screen === 'login') {
-    return <LoginScreen onLogin={handleLogin} />;
+    return <LoginScreen onLogin={handleLogin} notice={loginNotice} />;
   }
 
   if (screen === 'user-manager') {
@@ -1072,7 +1093,10 @@ export default function App() {
     <HomeScreen
       user={user}
       posts={visiblePosts}
-      onOpenPost={(post) => setSelectedPostId(post.id)}
+      onOpenPost={(post) => {
+        setSelectedPostId(post.id);
+        loadPostDetail(post.id);
+      }}
       onLogout={async () => {
         await handleLogout();
         setUserMenuOpen(false);
@@ -1107,6 +1131,8 @@ export default function App() {
       onOpenLogin={() => setScreen('login')}
       onSearch={setSearchTerm}
       searchTerm={searchTerm}
+      loadError={loadError}
+      onRetry={loadPosts}
     />
   );
 }
@@ -1295,6 +1321,14 @@ const styles = StyleSheet.create({
   logoutButtonText: {
     color: '#15314f',
     fontWeight: '700',
+  },
+  retryButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 10,
   },
   searchBox: {
     marginBottom: 12,

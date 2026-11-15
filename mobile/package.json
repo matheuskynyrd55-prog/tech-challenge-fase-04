@@ -8,12 +8,13 @@
     "android": "expo start --android --port 8081 --clear",
     "ios": "expo start --ios --port 8081 --clear",
     "web": "expo start --web --port 8081 --clear",
-    "test": "node --test src/services/auth.test.js"
+    "test": "node --test src/services/api.test.js"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^3.1.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~58.0.25",
     "expo-asset": "12.0.0",
+    "expo-constants": "~58.0.16",
     "expo-status-bar": "~3.0.0",
     "react": "19.3.1",
     "react-dom": "^19.3.1",

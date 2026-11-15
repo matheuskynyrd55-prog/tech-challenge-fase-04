@@ -10,21 +10,20 @@ A solução mantém a base funcional do projeto anterior e reorganiza a experiê
 
 ## Funcionalidades implementadas
 
-- login de usuário (professor padrão: `professor` / `123456`);
+- login de usuário (padrão: `docente` / `123456` ou `aluno` / `123456`);
 - listagem e busca de posts;
 - detalhe do post, curtidas e comentários;
-- administração de posts (criar, editar, excluir) para professores;
-- cadastro, edição e exclusão de usuários (professores e alunos) por professores;
-- persistência local no dispositivo.
+- administração de posts (criar, editar, excluir) para docentes;
+- cadastro, edição e exclusão de usuários (docentes e alunos) por docentes;
+- todos os dados vêm da API do Trabalho 2; o dispositivo guarda apenas a sessão.
 
 ---
 
 ## Estrutura principal
 
 - App.js: fluxo principal da aplicação;
-- src/services/api.js: persistência local (usuários, postagens e sessão);
-- src/services/auth.js: regras de login e cadastro de usuários;
-- src/services/auth.test.js: testes das regras de autenticação;
+- src/services/api.js: cliente HTTP da API (token Bearer, sessão e tratamento de erros);
+- src/services/api.test.js: testes do cliente HTTP;
 - app.json: configuração do Expo;
 - babel.config.js: configuração do Babel.
 
@@ -51,6 +50,6 @@ npx expo start --port 8081 --clear
 
 ## Observações
 
-Os dados (usuários, postagens e sessão) ficam armazenados localmente no dispositivo; o app não depende de backend.
+O app precisa da API do Trabalho 2 em execução (porta 3000) e do celular na mesma rede Wi-Fi do computador. Ele usa automaticamente o IP da rede local da máquina que roda o Expo; para forçar outro endereço, copie `.env.example` para `.env` e ajuste `EXPO_PUBLIC_API_URL`. Se o celular não conseguir conectar, libere a porta 3000 no Firewall do Windows.
 
-Testes das regras de autenticação: `node --test src/services/auth.test.js`.
+Testes do cliente HTTP: `npm run test`.
