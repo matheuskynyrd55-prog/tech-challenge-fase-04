@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Tech Challenge Fase 04",
+    "slug": "tech-challenge-fase-04",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ]
+  }
+}

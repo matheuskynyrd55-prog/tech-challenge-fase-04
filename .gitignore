@@ -1,0 +1,4 @@
+# Documentos de apoio - manter apenas os essenciais da entrega
+*.md
+!DOCUMENTACAO_ENTREGA.md
+!README.md

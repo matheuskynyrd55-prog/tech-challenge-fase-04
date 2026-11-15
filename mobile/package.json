@@ -1,0 +1,27 @@
+{
+  "name": "tech-challenge-fase-04",
+  "version": "1.0.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start --port 8081 --clear",
+    "android": "expo start --android --port 8081 --clear",
+    "ios": "expo start --ios --port 8081 --clear",
+    "web": "expo start --web --port 8081 --clear",
+    "test": "node --test src/services/auth.test.js"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^3.1.1",
+    "expo": "~58.0.25",
+    "expo-asset": "12.0.0",
+    "expo-status-bar": "~3.0.0",
+    "react": "19.3.1",
+    "react-dom": "^19.3.1",
+    "react-native": "0.88.1",
+    "react-native-web": "^0.21.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.0.0",
+    "@expo/cli": "^58.1.20"
+  }
+}
